@@ -20,6 +20,9 @@
 -export([doc_to_multi_part_stream/5, len_doc_to_multi_part_stream/4]).
 -export([abort_multi_part_stream/1]).
 
+%% needed by new replicator
+-export([mp_parse_doc1/2]).
+
 -include("couch_db.hrl").
 
 % helpers used by to_json_obj
@@ -482,6 +485,77 @@ atts_to_mp([Att | RestAtts], Boundary, WriteFun,
     WriteFun(<<"\r\n--", Boundary/binary>>),
     atts_to_mp(RestAtts, Boundary, WriteFun, SendEncodedAtts).
 
+
+%% This is use by the backend couch_httpd_db, *BUT* also by the chttpd fron end
+%% This newest version is changed slightly to enabble a new version of mp_parse_doc used
+%% by couch_replicator_api_wrap but breaks compatibility with chttpd
+%%
+%%doc_from_multi_part_stream(ContentType, DataFun) ->
+%%     Parent = self(),
+%%     Parser = spawn_link(fun() ->
+%%         {<<"--">>, _, _} = couch_httpd:parse_multipart_request(
+%%             ContentType, DataFun,
+%%             fun(Next) -> mp_parse_doc(Next, []) end),
+%%         unlink(Parent),
+%%         Parent ! {self(), finished}
+%%         end),
+%%     Ref = make_ref(),
+%%     Parser ! {get_doc_bytes, Ref, self()},
+%%     receive
+%%     {doc_bytes, Ref, DocBytes} ->
+%%         Doc = from_json_obj(?JSON_DECODE(DocBytes)),
+%%         % go through the attachments looking for 'follows' in the data,
+%%         % replace with function that reads the data from MIME stream.
+%%         ReadAttachmentDataFun = fun() ->
+%%             Parser ! {get_bytes, Ref, self()},
+%%             receive {bytes, Ref, Bytes} -> Bytes end
+%%         end,
+%%         Atts2 = lists:map(
+%%             fun(#att{data=follows}=A) ->
+%%                 A#att{data=ReadAttachmentDataFun};
+%%             (A) ->
+%%                 A
+%%             end, Doc#doc.atts),
+%%         WaitFun = fun() ->
+%%             receive {Parser, finished} -> ok end,
+%%             erlang:put(mochiweb_request_recv, true)
+%%         end,
+%%         {ok, Doc#doc{atts=Atts2}, WaitFun, Parser}
+%%     end.
+
+
+%% This is a new verion of mp_parse_doc, required because it's been exported to reuse
+%% in the new couch_replicator_api_wrap
+mp_parse_doc1({headers, H}, []) ->
+    case couch_util:get_value("content-type", H) of
+    {"application/json", _} ->
+        fun (Next) ->
+            mp_parse_doc1(Next, [])
+        end
+    end;
+mp_parse_doc1({body, Bytes}, AccBytes) ->
+    fun (Next) ->
+        mp_parse_doc1(Next, [Bytes | AccBytes])
+    end;
+mp_parse_doc1(body_end, AccBytes) ->
+    receive {get_doc_bytes, Ref, From} ->
+        From ! {doc_bytes, Ref, lists:reverse(AccBytes)}
+    end,
+    fun mp_parse_atts1/1.
+
+mp_parse_atts1(eof) ->
+    ok;
+mp_parse_atts1({headers, _H}) ->
+    fun mp_parse_atts1/1;
+mp_parse_atts1({body, Bytes}) ->
+    receive {get_bytes, Ref, From} ->
+        From ! {bytes, Ref, Bytes}
+    end,
+    fun mp_parse_atts1/1;
+mp_parse_atts1(body_end) ->
+    fun mp_parse_atts1/1.
+
+%% End of new mp_parse_doc1
 
 doc_from_multi_part_stream(ContentType, DataFun) ->
     Parent = self(),
