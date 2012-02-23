@@ -105,7 +105,7 @@ if not env.GetOption('clean'):
 
     ## Define properties for -h / -V
 
-    (_, vsn) = runcmd("git describe --match 1.*")
+    (_, vsn) = runcmd("git describe --match 1.* --always")
     conf.Define("PACKAGE_STRING", '"%s"' % vsn.rstrip())
     conf.Define("PACKAGE_NAME", '"Cloudant BigCouch"')
     conf.Define("PACKAGE_BUGREPORT", '"https://github.com/cloudant/bigcouch/issues"')
